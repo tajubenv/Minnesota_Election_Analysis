@@ -1,0 +1,270 @@
+---
+title: "MN_Senate_Election_Targeting_2020"
+author: "Tyler Jubenville"
+output: html_document
+---
+
+# Introduction
+
+```{r setup, include=FALSE}
+library(tidyverse) ## For Data Manipulating
+library(tidycensus)
+library(httr)
+library(magrittr)
+library(stringr)
+library(modelr)
+library(sf)
+library(RColorBrewer)
+source("MN_Senate_Analysis_Wrapper_Functions.R")
+```
+
+## 
+
+```{r}
+senate_election_years <- c(2010, 2012, 2016)
+senate_election_urls <- c("https://electionresults.sos.state.mn.us/Results/MediaFile_Archive/Index?erselectionId=69&mediafileid=30",
+                          "https://electionresults.sos.state.mn.us/Results/MediaFile_Archive/Index?erselectionId=1&mediafileid=30",
+                          "https://electionresultsfiles.sos.state.mn.us/20161108/stsenate.txt")
+election_data <- list()
+eval_string <- ""
+
+for (i in 1:length(senate_election_urls)) {
+  election_data[[i]] <- MN_senate_election_district_pull(senate_election_urls[i],
+                                              senate_election_years[i])
+  if (i == length(senate_election_urls)){
+    eval_string <- paste0(eval_string, "election_data[[", i, "]]")
+  }
+  else {
+    eval_string <- paste0(eval_string, "election_data[[", i, "]], ")
+  }
+}
+eval_string <- paste0("bind_rows(", eval_string, ")")
+election_data_full <- eval(parse(text = eval_string))
+election_data_full <- mutate(election_data_full, GEOID = paste0("270", str_pad(District, 2, "left", pad = "0")))
+
+```
+
+```{r}
+demographics_data <- list()
+eval_string <- ""
+
+for (i in 1:length(senate_election_years)) {
+  demographics_data[[i]] <- acs_needed_vars_wrapper(geography = "state legislative district (upper chamber)",
+                                             state = "MN",
+                                             year = senate_election_years[i],
+                                             survey = "acs5")
+  if (i == length(senate_election_urls)){
+    eval_string <- paste0(eval_string, "demographics_data[[", i, "]]")
+  }
+  else {
+    eval_string <- paste0(eval_string, "demographics_data[[", i, "]], ")
+  }
+}
+eval_string <- paste0("bind_rows(", eval_string, ")")
+demographics_data_full <- eval(parse(text = eval_string))
+```
+
+
+
+```{r}
+winners <- election_data_full  %>% group_by(GEOID, year) %>% 
+  filter(`Percentage of Votes for Candidate out of Total Votes for Office` == max(`Percentage of Votes for Candidate out of Total Votes for Office`)) %>%
+  rename(winning_Candidate_ID = `Candidate ID`, winning_Candidate_Name = `Candidate Name (First/Last/Suffix all in one field)`,
+                             winning_Party_Abbreviation = `Party Abbreviation`, winning_votes = `Votes for Candidate`, 
+                             winning_percent_votes = `Percentage of Votes for Candidate out of Total Votes for Office`) %>%
+  select(GEOID, year, `Office ID`, winning_Candidate_ID, winning_Candidate_Name,
+         winning_Party_Abbreviation, winning_votes, winning_percent_votes)
+
+
+election_data_full_winners <- left_join(election_data_full, winners, by = c("GEOID", "Office ID", "year")) %>%
+  mutate(winner_vote_diff = winning_votes - `Votes for Candidate`, 
+         winner = case_when(winner_vote_diff == 0 ~ 1,
+                           winner_vote_diff != 0 ~ 0))
+
+```
+
+```{r}
+combined_data <- inner_join(election_data_full_winners, demographics_data_full, by = c("GEOID", "year"))
+
+output_data <- filter(combined_data) %>% mutate(voting_gap = voting_age_pop - `Total number of votes for Office in area`,
+                                         percent_voting = `Total number of votes for Office in area` / voting_age_pop) %>%
+  select(State, District, year, GEOID, `Total number of votes for Office in area`,
+         `Candidate Name (First/Last/Suffix all in one field)`,
+         `Votes for Candidate`, voting_gap, percent_voting, `Party Abbreviation`,
+         `Percentage of Votes for Candidate out of Total Votes for Office`,
+         voting_age_pop,  women_voting_age, men_voting_age,
+         white_voting_age_pop, white_women_voting_age, white_men_voting_age,
+         black_voting_age_pop, black_women_voting_age, black_men_voting_age,
+         native_voting_age_pop, native_women_voting_age, native_men_voting_age,
+         asian_voting_age_pop, asian_women_voting_age, asian_men_voting_age,
+         other_voting_age_pop, other_women_voting_age, other_men_voting_age,
+         `Office ID`, winning_Candidate_ID, winning_Candidate_Name,
+         winning_Party_Abbreviation, winning_votes, winning_percent_votes,
+         winner_vote_diff, winner, B01002_001, B03001_003, B03001_001,
+         B19013_001) %>%
+  rename(median_age = B01002_001, median_income = B19013_001) %>%
+  mutate(hispanic_prop = B03001_003 / B03001_001,
+         white_prop = white_voting_age_pop / voting_age_pop,
+         black_prop = black_voting_age_pop / voting_age_pop,
+         native_prop = native_voting_age_pop / voting_age_pop,
+         asian_prop = asian_voting_age_pop / voting_age_pop,
+         other_prop = other_voting_age_pop / voting_age_pop)
+
+```
+
+# Most Vulnerable Democratic Districts
+
+```{r}
+close_dem_wins <- output_data %>% filter(year == 2016,
+                                         winning_Party_Abbreviation == "DFL",
+                                         `Party Abbreviation` != "DFL") %>% 
+  select(District, Total_Votes = `Total number of votes for Office in area`,
+         Votes_for_Candidate = `Votes for Candidate`,
+         Party_Abbreviation = `Party Abbreviation`, 
+         Percent_for_Candidate = `Percentage of Votes for Candidate out of Total Votes for Office`,
+         Candidate_Name = `Candidate Name (First/Last/Suffix all in one field)`,
+         winning_Candidate_Name, winning_Party_Abbreviation, winning_votes,
+         winning_percent_votes, winner_vote_diff) %>% 
+  arrange(winner_vote_diff)
+
+close_dem_wins %>% select(District,`Democratic Candidate` = winning_Candidate_Name,
+                          `Democratic Votes` = winning_votes,
+                          `Percent D` = winning_percent_votes,
+                          `Republican Candiate` = Candidate_Name, 
+                          `Republican Votes` = Votes_for_Candidate,
+                          `Percent R` = Percent_for_Candidate,
+                          `Margin of Victory` = winner_vote_diff) %>%
+  head(10) %>% knitr::kable()
+
+```
+
+# Most Vulnerable Republican Districts
+
+```{r}
+close_rep_wins <- output_data %>% filter(year == 2016,
+                                         winning_Party_Abbreviation == "R",
+                                         `Party Abbreviation` == "DFL") %>% 
+  select(District, Total_Votes = `Total number of votes for Office in area`,
+         Votes_for_Candidate = `Votes for Candidate`,
+         Party_Abbreviation = `Party Abbreviation`, 
+         Percent_for_Candidate = `Percentage of Votes for Candidate out of Total Votes for Office`,
+         Candidate_Name = `Candidate Name (First/Last/Suffix all in one field)`,
+         winning_Candidate_Name, winning_Party_Abbreviation, winning_votes,
+         winning_percent_votes, winner_vote_diff) %>% 
+  arrange(winner_vote_diff)
+
+close_rep_wins %>% select(District,
+                          `Democratic Candiate` = Candidate_Name, 
+                          `Democratic Votes` = Votes_for_Candidate,
+                          `Percent D` = Percent_for_Candidate,
+                          `Republican Candidate` = winning_Candidate_Name,
+                          `Republican Votes` = winning_votes,
+                          `Percent R` = winning_percent_votes,
+                          `Margin of Victory` = winner_vote_diff) %>%
+  head(10) %>% knitr::kable()
+
+```
+
+```{r}
+model_data <- output_data %>% 
+  select(State, District, year, GEOID, `Total number of votes for Office in area`, 
+         `Votes for Candidate`, voting_gap, percent_voting, `Party Abbreviation`,
+         `Percentage of Votes for Candidate out of Total Votes for Office`,
+         `Office ID`, winning_Candidate_ID, winning_Candidate_Name,
+         winning_Party_Abbreviation, winning_votes, winning_percent_votes,
+         winner_vote_diff, winner, median_age, median_income, hispanic_prop,
+         white_prop, black_prop, native_prop, asian_prop, other_prop) %>%
+  filter(`Party Abbreviation` == "DFL")
+
+dem_win_mod <- glm(winner ~ median_income + median_age + 
+                     white_prop + black_prop + native_prop + 
+                     asian_prop + other_prop + hispanic_prop,
+                   family = binomial(link="logit"),
+                   data = model_data)
+
+dem_win_mod %>% broom::tidy() %>% mutate(exp_estimate = exp(estimate))
+
+probability_mod_data <- model_data %>% add_predictions(dem_win_mod, type = "response")
+
+#ggplot(probability_mod_data, aes(median_age, winner)) + geom_point() + geom_line(aes(median_age, pred))
+```
+
+```{r}
+geom_data <- get_acs(state = "MN", geography = "state legislative district (upper chamber)", geometry = TRUE, variables = "B19013_001")
+
+
+map_data <- left_join(filter(probability_mod_data, year == 2016), geom_data, by="GEOID") %>% st_as_sf()
+
+ggplot(map_data, aes(fill = pred)) +
+  geom_sf(color = "black") +
+  coord_sf() + 
+  scale_fill_gradient2(name = "RdBU", 
+                       limits = c(0,1), 
+                       midpoint = 0.5)
+```
+
+
+```{r}
+project_acs_var <- function(data, year_range, x, y){
+  project_val_mod <- function(df){
+      glm(paste(y," ~ ",x), family=gaussian, data=df)
+  }
+  
+  by_geoid <- data %>% group_by(GEOID) %>% nest()
+  
+      
+  projected_years <- as.numeric(year_range) %>% tibble::enframe() %>% select(value)
+    colnames(projected_years) <- "year"
+  
+  by_geoid <- by_geoid %>%
+      mutate(model = map(data, project_val_mod)) %>%
+      mutate(projected_years = list(projected_years),
+             projected =  pmap(list(projected_years, model, "pred", "response"), add_predictions))
+   
+  ## Unnest the predictions and change pred to prop
+  projected_val <- unnest(by_geoid, projected) %>% 
+    select(!!x, GEOID, pred) %>% rename(!!y := pred)
+  
+  ## Select only the columns that are included in the projection dataset
+  data_reduced <- select(data, !!x, GEOID, !!y)
+  
+  ## Combine babynames with new projected data
+  data_and_projected <- bind_rows(data_reduced, projected_val)
+}
+proj_median_income <- project_acs_var(probability_mod_data, 2018:2020, "year", "median_income")
+proj_median_age <- project_acs_var(probability_mod_data, 2018:2020, "year", "median_age")
+proj_white_prop <- project_acs_var(probability_mod_data, 2018:2020, "year", "white_prop")
+proj_black_prop <- project_acs_var(probability_mod_data, 2018:2020, "year", "black_prop")
+proj_native_prop <- project_acs_var(probability_mod_data, 2018:2020, "year", "native_prop")
+proj_asian_prop <- project_acs_var(probability_mod_data, 2018:2020, "year", "asian_prop")
+proj_other_prop <- project_acs_var(probability_mod_data, 2018:2020, "year", "other_prop")
+proj_hispanic_prop <- project_acs_var(probability_mod_data, 2018:2020, "year", "hispanic_prop")
+
+
+projected_data <- left_join(proj_median_income, proj_median_age, by = c("year", "GEOID")) %>%
+  left_join(proj_white_prop, by = c("year", "GEOID")) %>%
+  left_join(proj_black_prop, by = c("year", "GEOID")) %>%
+  left_join(proj_native_prop, by = c("year", "GEOID")) %>%
+  left_join(proj_asian_prop, by = c("year", "GEOID")) %>%
+  left_join(proj_other_prop, by = c("year", "GEOID")) %>%
+  left_join(proj_hispanic_prop, by = c("year", "GEOID"))
+
+```
+
+```{r}
+prediction_2020<- projected_data %>%
+  add_predictions(dem_win_mod, type = "response") %>% 
+  mutate(predicted_win = case_when(pred > 0.5 ~ "Win",
+                                    pred <= 0.5 ~ "Loss")) %>% filter(year == 2020)
+
+prediction_2020 %>% group_by(predicted_win) %>% count()
+
+```
+
+# Limitations
+
+1.) No encumbant data
+2.) No third party
+3.) projections
+
+# Future Work
