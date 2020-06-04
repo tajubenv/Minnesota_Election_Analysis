@@ -1,36 +1,72 @@
 ---
 title: "MN_Senate_Election_Targeting_2020"
 author: "Tyler Jubenville"
-output: html_document
+output:
+  html_document: default
+  pdf_document: default
 ---
+
+# Note
+
+As a note, the majority of this blog post was written before the murder of George Floyd. While this post seeks to explore the electoral impact of demographics in Minnesota broadly, I am not going to try to predict how these events may affect the coming election. If you support data-driven solutions to real world problems, consider donating to [Campaign Zero](https://www.joincampaignzero.org/).
 
 # Introduction
 
+This analysis will focus on which districts should see the most investment in a democratic strategy for the Minnesota State Senate, as well as a first draft of a predictive model for the 2020 Minnesota state senate elections. Data should certainly inform the decision making around elections, but in cases of high uncertainty, like elections, data should not be a stand in for sound strategy, based on reasonable assumptions. This is important to understanding this model and paper, as it currently incorporated demographic data, but does not include current estimates of public sentiment or a likely voter turnout model for the 2020 election.
+
+
+The code for this project can be found in the following github repository: [https://github.com/tajubenv/Minnesota_Election_Analysis](https://github.com/tajubenv/Minnesota_Election_Analysis).
+
 ```{r setup, include=FALSE}
 library(tidyverse) ## For Data Manipulating
-library(tidycensus)
-library(httr)
-library(magrittr)
-library(stringr)
-library(modelr)
-library(sf)
-library(RColorBrewer)
+library(tidycensus) ## For Accessing census data
+library(httr) ## Access online election results
+library(magrittr) ## mostly for %<>%
+library(stringr) ## string Manipulation
+library(modelr) ## Model Helpers
+library(sf) ## sf plotting
+library(RColorBrewer) ## Pretty Plots
+library(ggpubr)  ## Arranging Plots
+library(qwraps2) ## Summary Statistics
+library(kableExtra) ## Pretty Tables
 source("MN_Senate_Analysis_Wrapper_Functions.R")
+options(qwraps2_markup = "markdown") ## Ensure correct output
 ```
 
-## 
+# Data Sources
 
-```{r}
+Data for this post was pulled from the Minnesota secretary of state elections website, [https://www.sos.state.mn.us/elections-voting/election-results](https://www.sos.state.mn.us/elections-voting/election-results) for election results. Demographic data was pulled from the 5 year American Community Survey (ACS) Data [https://www.census.gov/programs-surveys/acs/data.html](https://www.census.gov/programs-surveys/acs/data.html) using the [tidycensus](https://walker-data.com/tidycensus/) in R. The ACS data has varying levels of depth between 1, 3, and 5 year datasets. The 5 year data is the only survey that contains State Senate level data for Minnesota. The 5 year estimates are calculated based on data within the 5 preceding years of the date given on the data. Thus when data for the 2016 ACS is estimated, the estimate includes data from 2012-2016. This poses the obvious issue that it is desirable to understand the demographics on election day, rather than an estimate for the previous 5 years. This analysis is focused more on strategy and prediction, rather than inference, so it is most appropriate to use resources that will be available before the election in November. As a result, the ACS estimates will be examined for the year they end, rather than offset in any manner.  
+
+# Methods
+
+Data was collected from the ACS 5 year survey for 2010, 2012, and 2016 for all counties that had a Democratic-Farmer-Labor Party candidate running for state senate in those same years. Specific demographic data included median income, median age, and proportions of the county that were White, Black, Native American, Asian or Other as defined by the ACS data. Proportion of Hispanic descent was also included. All proportions for this model are proportions of the voting age population.
+
+After data collection and cleaning, a logistic regression was performed to predict the likelihood of a democratic victory within a MN senate district, based on demographic characteristics of the district. In addition, linear models were used to project the same demographic information for the 2020 election across the state. The model was then used to analyze potential districts for democratic campaigns to target in 2020. 
+
+# Results
+
+Summaries for the demographic data included in the regression model are shown in the table below.  
+
+
+
+```{r, include=FALSE}
+## Select only years with acs 5 year data
 senate_election_years <- c(2010, 2012, 2016)
+## Manually input the mn election results
 senate_election_urls <- c("https://electionresults.sos.state.mn.us/Results/MediaFile_Archive/Index?erselectionId=69&mediafileid=30",
                           "https://electionresults.sos.state.mn.us/Results/MediaFile_Archive/Index?erselectionId=1&mediafileid=30",
                           "https://electionresultsfiles.sos.state.mn.us/20161108/stsenate.txt")
+## List to contain data
 election_data <- list()
+## String to contain command that will bind data together
 eval_string <- ""
 
+## Loop through election years
 for (i in 1:length(senate_election_urls)) {
+  ## Pull data into list
   election_data[[i]] <- MN_senate_election_district_pull(senate_election_urls[i],
                                               senate_election_years[i])
+  ## Generate string for binding rows
   if (i == length(senate_election_urls)){
     eval_string <- paste0(eval_string, "election_data[[", i, "]]")
   }
@@ -38,21 +74,35 @@ for (i in 1:length(senate_election_urls)) {
     eval_string <- paste0(eval_string, "election_data[[", i, "]], ")
   }
 }
+## Finalize string
 eval_string <- paste0("bind_rows(", eval_string, ")")
-election_data_full <- eval(parse(text = eval_string))
-election_data_full <- mutate(election_data_full, GEOID = paste0("270", str_pad(District, 2, "left", pad = "0")))
 
+## Bind all datasets together
+election_data_full <- eval(parse(text = eval_string))
+
+## Create GEOID field for merging with census data
+election_data_full <- mutate(election_data_full, 
+                             GEOID = paste0("270", 
+                                            str_pad(District, 2, 
+                                                    "left", 
+                                                    pad = "0")))
 ```
 
-```{r}
+```{r, include=FALSE}
+## List to contain data
 demographics_data <- list()
+
+## String to contain command that will bind data together
 eval_string <- ""
 
+## Loop through election years
 for (i in 1:length(senate_election_years)) {
+  ## Pull data into list
   demographics_data[[i]] <- acs_needed_vars_wrapper(geography = "state legislative district (upper chamber)",
                                              state = "MN",
                                              year = senate_election_years[i],
                                              survey = "acs5")
+  ## Generate string for binding rows
   if (i == length(senate_election_urls)){
     eval_string <- paste0(eval_string, "demographics_data[[", i, "]]")
   }
@@ -60,13 +110,15 @@ for (i in 1:length(senate_election_years)) {
     eval_string <- paste0(eval_string, "demographics_data[[", i, "]], ")
   }
 }
+## Bind all datasets together
 eval_string <- paste0("bind_rows(", eval_string, ")")
 demographics_data_full <- eval(parse(text = eval_string))
 ```
 
 
 
-```{r}
+```{r, include=FALSE}
+## Filter for only winning candidates
 winners <- election_data_full  %>% group_by(GEOID, year) %>% 
   filter(`Percentage of Votes for Candidate out of Total Votes for Office` == max(`Percentage of Votes for Candidate out of Total Votes for Office`)) %>%
   rename(winning_Candidate_ID = `Candidate ID`, winning_Candidate_Name = `Candidate Name (First/Last/Suffix all in one field)`,
@@ -75,18 +127,19 @@ winners <- election_data_full  %>% group_by(GEOID, year) %>%
   select(GEOID, year, `Office ID`, winning_Candidate_ID, winning_Candidate_Name,
          winning_Party_Abbreviation, winning_votes, winning_percent_votes)
 
-
+## Join winning data back to full data
 election_data_full_winners <- left_join(election_data_full, winners, by = c("GEOID", "Office ID", "year")) %>%
   mutate(winner_vote_diff = winning_votes - `Votes for Candidate`, 
          winner = case_when(winner_vote_diff == 0 ~ 1,
                            winner_vote_diff != 0 ~ 0))
-
 ```
 
-```{r}
+```{r, include=FALSE}
+## Join election data to demographic data
 combined_data <- inner_join(election_data_full_winners, demographics_data_full, by = c("GEOID", "year"))
 
-output_data <- filter(combined_data) %>% mutate(voting_gap = voting_age_pop - `Total number of votes for Office in area`,
+## Calculate demographic proportions, voting gap, and rename some variables from census
+output_data <- combined_data %>% mutate(voting_gap = voting_age_pop - `Total number of votes for Office in area`,
                                          percent_voting = `Total number of votes for Office in area` / voting_age_pop) %>%
   select(State, District, year, GEOID, `Total number of votes for Office in area`,
          `Candidate Name (First/Last/Suffix all in one field)`,
@@ -112,9 +165,63 @@ output_data <- filter(combined_data) %>% mutate(voting_gap = voting_age_pop - `T
 
 ```
 
-# Most Vulnerable Democratic Districts
 
-```{r}
+
+```{r, echo=FALSE, warning=FALSE, message=FALSE}
+## Select Model Data and filter only for Democratic candidates
+model_data <- output_data %>% 
+  select(State, District, year, GEOID, `Total number of votes for Office in area`, 
+         `Votes for Candidate`, voting_gap, percent_voting, `Party Abbreviation`,
+         `Percentage of Votes for Candidate out of Total Votes for Office`,
+         `Office ID`, winning_Candidate_ID, winning_Candidate_Name,
+         winning_Party_Abbreviation, winning_votes, winning_percent_votes,
+         winner_vote_diff, winner, median_age, median_income, hispanic_prop,
+         white_prop, black_prop, native_prop, asian_prop, other_prop) %>%
+  filter(`Party Abbreviation` == "DFL")
+
+## Logistic Regression
+dem_win_mod <- glm(winner ~ median_income + median_age + 
+                     white_prop + black_prop + native_prop + 
+                     asian_prop + other_prop + hispanic_prop,
+                   family = binomial(link="logit"),
+                   data = model_data)
+
+## Include predictions in dataset
+probability_mod_data <- model_data %>% add_predictions(dem_win_mod, type = "response") 
+```
+
+
+```{r, results="asis", echo=FALSE, warning=FALSE, message=FALSE}
+## Select variables for output
+vals_for_sum <- select(model_data, winner, median_income, median_age, 
+                   white_prop, black_prop, native_prop, 
+                   asian_prop, other_prop, hispanic_prop, year) %>% group_by(year) 
+## Output description for table
+val_sum <- vals_for_sum %>% summary_table(.) 
+val_sum
+```
+
+There are clearly some areas for concern with modeling this data. The demographic proportion variables have high collinearity, which could make the estimates unreliable or unstable. In this case, removing multiple proportions did not have a large effect on model predictions, so they were included. Results for the logistic regression are shown in the table below. The only variable with a non-significant effect is the proportion of Hispanic descent within the district.
+
+```{r, echo=FALSE, warning=FALSE, message=FALSE}
+## Include interpretable coefficients and confidence interval
+dem_win_mod %>% broom::tidy() %>% mutate(exp_estimate = exp(estimate), 
+                                         CI_lower = exp(estimate-std.error),
+                                         CI_upper = exp(estimate+std.error)) %>% knitr::kable(digits = 2) %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "responsive"))
+
+```
+
+# Strategy 
+
+The development of a model to help predict outcomes is useful to help put specific races in context and provides a lens for targeting races. The most obvious strategy however is to simply examine the close races from 2016.
+
+## Vulnerable Democratic Districts
+
+The following 10 districts are those that democrats won narrowly in 2016, ranked by the raw difference between the top two candidates.
+
+```{r, echo=FALSE, warning=FALSE, message=FALSE}
+## Filter for democratic victories and select needed variables
 close_dem_wins <- output_data %>% filter(year == 2016,
                                          winning_Party_Abbreviation == "DFL",
                                          `Party Abbreviation` != "DFL") %>% 
@@ -127,20 +234,41 @@ close_dem_wins <- output_data %>% filter(year == 2016,
          winning_percent_votes, winner_vote_diff) %>% 
   arrange(winner_vote_diff)
 
-close_dem_wins %>% select(District,`Democratic Candidate` = winning_Candidate_Name,
-                          `Democratic Votes` = winning_votes,
-                          `Percent D` = winning_percent_votes,
-                          `Republican Candiate` = Candidate_Name, 
-                          `Republican Votes` = Votes_for_Candidate,
-                          `Percent R` = Percent_for_Candidate,
-                          `Margin of Victory` = winner_vote_diff) %>%
-  head(10) %>% knitr::kable()
+## Rename variables for table output
+close_dem_win_sum <- close_dem_wins %>% 
+  select(District,
+         `Democratic Candidate` = winning_Candidate_Name,
+         `Democratic Votes` = winning_votes,
+         `Percent DFL` = winning_percent_votes,
+         `Republican Candiate` = Candidate_Name, 
+         `Republican Votes` = Votes_for_Candidate,
+         `Percent R` = Percent_for_Candidate,
+         `Margin of Victory` = winner_vote_diff) %>%
+  head(10) 
 
+
+## Tabulate totals and output
+close_dem_win_sum %>% 
+  add_row(District = "Total:",
+          `Democratic Candidate` = "-",
+          `Democratic Votes` = sum(.$`Democratic Votes`),
+          `Percent DFL` = NA,
+          `Republican Candiate` = "-", 
+          `Republican Votes` = sum(.$`Republican Votes`),
+          `Percent R` = NA,
+          `Margin of Victory` = sum(.$`Margin of Victory`)) %>%
+  knitr::kable() %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "responsive"))
 ```
 
-# Most Vulnerable Republican Districts
 
-```{r}
+
+## Vulnerable Republican Districts
+
+The following table shows vulnerable Republican districts using the same methodology as the table above.
+
+```{r, echo=FALSE, warning=FALSE, message=FALSE}
+## Filter for republican victories and select needed variables
 close_rep_wins <- output_data %>% filter(year == 2016,
                                          winning_Party_Abbreviation == "R",
                                          `Party Abbreviation` == "DFL") %>% 
@@ -153,69 +281,70 @@ close_rep_wins <- output_data %>% filter(year == 2016,
          winning_percent_votes, winner_vote_diff) %>% 
   arrange(winner_vote_diff)
 
-close_rep_wins %>% select(District,
-                          `Democratic Candiate` = Candidate_Name, 
-                          `Democratic Votes` = Votes_for_Candidate,
-                          `Percent D` = Percent_for_Candidate,
-                          `Republican Candidate` = winning_Candidate_Name,
-                          `Republican Votes` = winning_votes,
-                          `Percent R` = winning_percent_votes,
-                          `Margin of Victory` = winner_vote_diff) %>%
-  head(10) %>% knitr::kable()
+## Rename variables for table output
+close_rep_win_sum <- close_rep_wins %>% 
+  select(District,
+         `Democratic Candidate` = Candidate_Name, 
+         `Democratic Votes` = Votes_for_Candidate,
+         `Percent DFL` = Percent_for_Candidate,
+         `Republican Candidate` = winning_Candidate_Name,
+         `Republican Votes` = winning_votes,
+         `Percent R` = winning_percent_votes,
+         `Margin of Victory` = winner_vote_diff) %>%
+  head(10)
 
-```
-
-```{r}
-model_data <- output_data %>% 
-  select(State, District, year, GEOID, `Total number of votes for Office in area`, 
-         `Votes for Candidate`, voting_gap, percent_voting, `Party Abbreviation`,
-         `Percentage of Votes for Candidate out of Total Votes for Office`,
-         `Office ID`, winning_Candidate_ID, winning_Candidate_Name,
-         winning_Party_Abbreviation, winning_votes, winning_percent_votes,
-         winner_vote_diff, winner, median_age, median_income, hispanic_prop,
-         white_prop, black_prop, native_prop, asian_prop, other_prop) %>%
-  filter(`Party Abbreviation` == "DFL")
-
-dem_win_mod <- glm(winner ~ median_income + median_age + 
-                     white_prop + black_prop + native_prop + 
-                     asian_prop + other_prop + hispanic_prop,
-                   family = binomial(link="logit"),
-                   data = model_data)
-
-dem_win_mod %>% broom::tidy() %>% mutate(exp_estimate = exp(estimate))
-
-probability_mod_data <- model_data %>% add_predictions(dem_win_mod, type = "response")
-
-#ggplot(probability_mod_data, aes(median_age, winner)) + geom_point() + geom_line(aes(median_age, pred))
-```
-
-```{r}
-geom_data <- get_acs(state = "MN", geography = "state legislative district (upper chamber)", geometry = TRUE, variables = "B19013_001")
-
-
-map_data <- left_join(filter(probability_mod_data, year == 2016), geom_data, by="GEOID") %>% st_as_sf()
-
-ggplot(map_data, aes(fill = pred)) +
-  geom_sf(color = "black") +
-  coord_sf() + 
-  scale_fill_gradient2(name = "RdBU", 
-                       limits = c(0,1), 
-                       midpoint = 0.5)
+## Tabulate totals and output
+close_rep_win_sum %>% 
+  add_row(District = "Total:",
+          `Democratic Candidate` = "-",
+          `Democratic Votes` = sum(.$`Democratic Votes`),
+          `Percent DFL` = NA,
+          `Republican Candidate` = "-", 
+          `Republican Votes` = sum(.$`Republican Votes`),
+          `Percent R` = NA,
+          `Margin of Victory` = sum(.$`Margin of Victory`)) %>%
+  knitr::kable() %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "responsive"))
 ```
 
 
-```{r}
+
+```{r, echo=FALSE, warning=FALSE, message=FALSE, results="hide"}
+## Get ACS geometry data
+geom_data <- get_acs(state = "MN", 
+                     geography = "state legislative district (upper chamber)", 
+                     geometry = TRUE, variables = "B19013_001")
+
+## Join data for mapping
+map_data <- left_join(probability_mod_data, geom_data, by="GEOID") %>% st_as_sf()
+
+## Plot geography data
+# ggplot(filter(map_data, year == 2016), aes(fill = pred)) +
+#   geom_sf(color = "black") +
+#   coord_sf() + 
+#   scale_fill_gradient2(name = "RdBU", 
+#                        limits = c(0,1), 
+#                        midpoint = 0.5)
+```
+
+
+```{r, echo=FALSE, warning=FALSE, message=FALSE}
 project_acs_var <- function(data, year_range, x, y){
+  ## Projects a variable (y) within the data forward in the year_range value, based on GEOID 
+  ## x should be the year variable in the dataframe
+  
+  ## Model definition
   project_val_mod <- function(df){
       glm(paste(y," ~ ",x), family=gaussian, data=df)
   }
-  
+  ## Nest Data
   by_geoid <- data %>% group_by(GEOID) %>% nest()
   
-      
+  ## Build projected years column   
   projected_years <- as.numeric(year_range) %>% tibble::enframe() %>% select(value)
     colnames(projected_years) <- "year"
   
+  ## Model for each value
   by_geoid <- by_geoid %>%
       mutate(model = map(data, project_val_mod)) %>%
       mutate(projected_years = list(projected_years),
@@ -231,6 +360,8 @@ project_acs_var <- function(data, year_range, x, y){
   ## Combine babynames with new projected data
   data_and_projected <- bind_rows(data_reduced, projected_val)
 }
+
+## Project for all values within model 
 proj_median_income <- project_acs_var(probability_mod_data, 2018:2020, "year", "median_income")
 proj_median_age <- project_acs_var(probability_mod_data, 2018:2020, "year", "median_age")
 proj_white_prop <- project_acs_var(probability_mod_data, 2018:2020, "year", "white_prop")
@@ -240,7 +371,7 @@ proj_asian_prop <- project_acs_var(probability_mod_data, 2018:2020, "year", "asi
 proj_other_prop <- project_acs_var(probability_mod_data, 2018:2020, "year", "other_prop")
 proj_hispanic_prop <- project_acs_var(probability_mod_data, 2018:2020, "year", "hispanic_prop")
 
-
+## Join data together
 projected_data <- left_join(proj_median_income, proj_median_age, by = c("year", "GEOID")) %>%
   left_join(proj_white_prop, by = c("year", "GEOID")) %>%
   left_join(proj_black_prop, by = c("year", "GEOID")) %>%
@@ -248,23 +379,160 @@ projected_data <- left_join(proj_median_income, proj_median_age, by = c("year", 
   left_join(proj_asian_prop, by = c("year", "GEOID")) %>%
   left_join(proj_other_prop, by = c("year", "GEOID")) %>%
   left_join(proj_hispanic_prop, by = c("year", "GEOID"))
-
 ```
 
-```{r}
-prediction_2020<- projected_data %>%
+```{r, echo=FALSE, warning=FALSE, message=FALSE}
+## Filter for not needed years and add predicted response
+prediction_2020 <- projected_data %>%
   add_predictions(dem_win_mod, type = "response") %>% 
-  mutate(predicted_win = case_when(pred > 0.5 ~ "Win",
-                                    pred <= 0.5 ~ "Loss")) %>% filter(year == 2020)
+  mutate(predicted_win = case_when(pred > 0.5 ~ 1,
+                                    pred <= 0.5 ~ 0)) %>% 
+  filter(year != 2018 & year != 2019)
+```
 
-prediction_2020 %>% group_by(predicted_win) %>% count()
+## Projections
 
+The model was used to create predictions for projected 2020 demographics. A summary of the projections vs reality are shown in the table below. The model clearly shows an under performance in 2016 based purely on demographic factors. Interestingly, the model predicts the same number of seats in both 2020 as 2016. There are obviously many electoral factors that will be different in 2020 compared to 2016. Actually predicting the results will clearly not be possible with this dataset, but it can be used to guide decision making.
+
+```{r, echo=FALSE, warning=FALSE, message=FALSE}
+## Join projection data to model data to include winner
+data_with_projections <- left_join(prediction_2020, 
+                                   select(probability_mod_data, year, GEOID, winner), 
+                                   by = c("GEOID", "year"))
+## Summarize actual election results
+data_with_projections %>% group_by(year) %>% 
+  summarize(`Predicted Democratic Seats` = sum(predicted_win), 
+            `Actual Democratic Seats` = sum(winner)) %>% knitr::kable() %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "responsive"))
+```
+
+To use the model for district targeting, districts that Democratic candidates lost, but had favorable demographics are shown below:
+
+```{r}
+probability_mod_data %>% filter(year == 2016,
+                                 winner == 0) %>% 
+  arrange(desc(pred)) %>% mutate(pred = pred * 100,
+                                 percent_voting = percent_voting * 100) %>%
+  select(District, 
+         `Percent DFL` = `Percentage of Votes for Candidate out of Total Votes for Office`, 
+         `Percent R` = winning_percent_votes,
+         `Margin of Victory` = winner_vote_diff,
+         `Modeled Win Probability (%)` = pred,
+         `Voter Turnout (%)` = percent_voting) %>% 
+  head(10) %>% knitr::kable(digits = 2) %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "responsive"))
+```
+
+The most important information that can be gleaned from this table are the districts that did not appear in the "close loss" table above. These represent districts that would not have been identified as winnable simply from vote totals. These districts are 1, 9, 10, 22, and 55. There are likely other factors that play an important part within these districts as outliers, but they are still areas that are demographically favorable to democrats. 
+
+## Visualizations
+
+While working through this data, I thought it was important to visualize the results to challenge my assumptions and ensure the results appeared consistent. I may work this into a full shiny app in the future, but for now it will remain as the separate visuals below:
+
+```{r, echo=FALSE, warning=FALSE, message=FALSE}
+## Join projection data to geography data
+map_data <- left_join(data_with_projections, geom_data, by="GEOID") %>% st_as_sf()
+
+## Blank theme for plot creation
+blank_theme <- theme(axis.line=element_blank(),
+      axis.text.x=element_blank(),
+      axis.text.y=element_blank(),
+      axis.ticks=element_blank(),
+      axis.title.x=element_blank(),
+      axis.title.y=element_blank(),
+      legend.position="none",
+      panel.background=element_blank(),
+      panel.border=element_blank(),
+      panel.grid.major=element_blank(),
+      panel.grid.minor=element_blank(),
+      plot.background=element_blank())
+ 
+## Probability plots
+prob_2010 <- ggplot(filter(map_data, year == 2010),
+                    aes(fill = pred)) +
+  geom_sf(color = "black") +
+  coord_sf() + 
+  scale_fill_gradient2(name = "RdBU", 
+                       limits = c(0,1), 
+                       midpoint = 0.5) + 
+  blank_theme + ggtitle("Probability")
+
+prob_2012 <- ggplot(filter(map_data, year == 2012),
+                    aes(fill = pred)) +
+  geom_sf(color = "black") +
+  coord_sf() + 
+  scale_fill_gradient2(name = "RdBU", 
+                       limits = c(0,1), 
+                       midpoint = 0.5) + 
+  blank_theme + ggtitle("Probability")
+
+prob_2016 <- ggplot(filter(map_data, year == 2016),
+                    aes(fill = pred)) +
+  geom_sf(color = "black") +
+  coord_sf() + 
+  scale_fill_gradient2(name = "RdBU", 
+                       limits = c(0,1), 
+                       midpoint = 0.5) + 
+  blank_theme + ggtitle("Probability")
+
+prob_2020 <- ggplot(filter(map_data, year == 2020),
+                    aes(fill = pred)) +
+  geom_sf(color = "black") +
+  coord_sf() + 
+  scale_fill_gradient2(name = "RdBU", 
+                       limits = c(0,1), 
+                       midpoint = 0.5) + 
+  blank_theme + ggtitle("2020 Probability") +
+  theme(legend.position="right")
+
+## Result Plots
+result_2010 <- ggplot(filter(map_data, year == 2010),
+                    aes(fill = as.factor(winner))) +
+  geom_sf(color = "black") +
+  coord_sf() + 
+  scale_fill_manual(values = c("0" = "#E81B23", "1" = "#3333FF")) + 
+  blank_theme + ggtitle("Results")
+  
+
+result_2012 <- ggplot(filter(map_data, year == 2012),
+                    aes(fill = as.factor(winner))) +
+  geom_sf(color = "black") +
+  coord_sf() + 
+  scale_fill_manual(values = c("0" = "#E81B23", "1" = "#3333FF")) + 
+  blank_theme + ggtitle("Results")
+
+result_2016 <- ggplot(filter(map_data, year == 2016),
+                    aes(fill = as.factor(winner))) +
+  geom_sf(color = "black") +
+  coord_sf() + 
+  scale_fill_manual(values = c("0" = "#E81B23", "1" = "#3333FF")) + 
+  blank_theme + ggtitle("Results")
+
+## Output Plots
+annotate_figure(
+  ggarrange(prob_2010, result_2010, ncol = 2),
+  top = text_grob("2010 Probability vs Results", 
+                  color = "black", face = "bold", size = 14))
+
+annotate_figure(
+  ggarrange(prob_2012, result_2012, ncol = 2),
+  top = text_grob("2012 Probability vs Results", 
+                  color = "black", face = "bold", size = 14))
+
+annotate_figure(
+  ggarrange(prob_2016, result_2016, ncol = 2),
+  top = text_grob("2016 Probability vs Results", 
+                  color = "black", face = "bold", size = 14))
+
+prob_2020
 ```
 
 # Limitations
 
-1.) No encumbant data
-2.) No third party
-3.) projections
+There are a lot of clear limitations with the current data. To begin with, the data does not include encumbent information, or information on the presence of third party candidates. The ACS estimates are for 5 year periods, so they are likely not truly representative of the district on election day, particularly in districts that undergo rapid demographic change. There is also no inclusion of polling data, which could serve to analyze likely voters and also general trends that are not shown in demographic data.
+
+Regarding the modeling, there are several key issues. The projections are simple linear projections from the ACS data, and thus have a high degree of uncertainty. In addition, there is no voter turnout model within the current iteration for this model. Multicollinearity could also be a problem with all of the demographic proportions included within the model. Finally the logistic regression may not be the most appropriate model for this problem. Other methods may result in better predictive power. 
 
 # Future Work
+
+There is clearly a lot of room to expand this analysis. To begin with I plan on branching this project out in 2 ways. I want to expand this analysis to include the Minnesota House of Representatives. Combining this analysis should allow for a greater level of detail and theoretically better projections. In addition, I would like to spend another post going into deeper depth on building the most predictive model possible for Minnesota elections. To do this, I will address as many of the aforementioned limitations possible and explore other modeling techniques with this data. Finally, once a more complete dataset and model are in place, I would like to develop a shiny app for interactive visualization.
