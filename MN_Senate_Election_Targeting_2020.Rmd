@@ -408,7 +408,7 @@ data_with_projections %>% group_by(year) %>%
 
 To use the model for district targeting, districts that Democratic candidates lost, but had favorable demographics are shown below:
 
-```{r}
+```{r, echo=FALSE, warning=FALSE, message=FALSE}
 probability_mod_data %>% filter(year == 2016,
                                  winner == 0) %>% 
   arrange(desc(pred)) %>% mutate(pred = pred * 100,
